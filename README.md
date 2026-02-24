@@ -84,7 +84,7 @@ The core WPS connection logic (PIN testing, brute force, Pixie Dust, wpa_supplic
 git clone https://github.com/fulvius31/wifi-wps-wpa-tester-opensource.git
 
 # Navigate to project directory
-cd wifi-wps-wpa-tester-opensource
+cd wifi-wps-wpa-tester-opensource/wifi-wps-repo
 
 # Build debug APK
 ./gradlew assembleOpenDebug
@@ -95,6 +95,10 @@ cd wifi-wps-wpa-tester-opensource
 # Run tests
 ./gradlew test
 ```
+```bash
+# we made action runner to for compile 
+use action runner for building 
+
 
 The built APK will be located at:
 ```
