@@ -1,5 +1,8 @@
 # WiFi WPS WPA Tester - Open Source
 
+[![Build & Release APK](https://github.com/fulvius31/wifi-wps-wpa-tester-opensource/actions/workflows/build-and-release-apk.yml/badge.svg)](https://github.com/fulvius31/wifi-wps-wpa-tester-opensource/actions/workflows/build-and-release-apk.yml)
+[![Android Build](https://github.com/fulvius31/wifi-wps-wpa-tester-opensource/actions/workflows/android.yml/badge.svg)](https://github.com/fulvius31/wifi-wps-wpa-tester-opensource/actions/workflows/android.yml)
+
 A limited, open-source version of the popular **WIFI WPS WPA TESTER** Android application for educational and security research purposes.
 
 ## Disclaimer
@@ -70,7 +73,11 @@ The core WPS connection logic (PIN testing, brute force, Pixie Dust, wpa_supplic
 
 **[WpsConnectionLibrary](https://github.com/fulvius31/WpsConnectionLibrary)** — consumed via [JitPack](https://jitpack.io/#fulvius31/WpsConnectionLibrary)
 
+---
+
 ## Building from Source
+
+### Local Build
 
 ```bash
 # Clone the repository
@@ -80,11 +87,162 @@ git clone https://github.com/fulvius31/wifi-wps-wpa-tester-opensource.git
 cd wifi-wps-wpa-tester-opensource
 
 # Build debug APK
-./gradlew assembleDebug
+./gradlew assembleOpenDebug
+
+# Build release APK
+./gradlew assembleOpenRelease
 
 # Run tests
 ./gradlew test
 ```
+
+The built APK will be located at:
+```
+app/build/outputs/apk/open/debug/app-open-debug.apk       # Debug
+app/build/outputs/apk/open/release/app-open-release.apk    # Release
+```
+
+### Build Requirements (Local)
+
+| Requirement | Version |
+|-------------|---------|
+| JDK | 17 |
+| Android SDK | API 36 (compileSdk) |
+| Build Tools | 36.0.0 |
+| Gradle | 9.3.0 (via wrapper) |
+| Min SDK | API 24 (Android 7.0) |
+| Target SDK | API 36 |
+
+---
+
+## CI/CD: GitHub Actions (Automated Build & Release)
+
+This project includes a fully automated CI/CD pipeline that builds the APK and uploads it to GitHub Releases. The setup is inspired by TWRP recovery action builders with disk space optimization and swap setup.
+
+### Workflow Files
+
+| Workflow | File | Purpose |
+|----------|------|---------|
+| **Build & Release APK** | `.github/workflows/build-and-release-apk.yml` | Full build pipeline with automatic release upload |
+| **Android Build** | `.github/workflows/android.yml` | Code quality checks, build, and testing |
+
+### How the Build & Release Workflow Works
+
+#### Triggers
+
+The workflow runs automatically in these cases:
+
+| Trigger | Build Type | Creates Release? |
+|---------|-----------|-----------------|
+| Push to `main` branch | Debug | Yes (pre-release) |
+| Tag push (`v*` or `release-*`) | Release | Yes (latest) |
+| Pull request to `main` | Debug | No |
+| Manual dispatch | Your choice | Your choice |
+
+#### Build Pipeline Steps
+
+```
+1. Checkout Code
+       |
+2. Free Disk Space (removes unused tools ~30GB freed)
+       |
+3. Set Up Swap Space (10GB - prevents OOM kills)
+       |
+4. Install JDK 17 (Temurin) with Gradle cache
+       |
+5. Install Android SDK (API 36 + Build Tools 36.0.0)
+       |
+6. Validate Gradle Wrapper
+       |
+7. Cache Gradle Dependencies
+       |
+8. Run Code Quality Checks (Spotless + Detekt)
+       |
+9. Build APK (debug or release)
+       |
+10. Run Unit Tests
+       |
+11. Rename APK (with version, date, commit hash)
+       |
+12. Upload as Build Artifact
+       |
+13. Create GitHub Release + Upload APK
+```
+
+#### Environment Setup Details
+
+The workflow automatically handles:
+
+- **Disk Space**: Cleans up ~30GB of unused pre-installed tools (dotnet, Android NDK, Haskell, etc.)
+- **Swap Space**: Allocates 10GB of swap to prevent out-of-memory kills during Kotlin/Compose compilation
+- **JDK**: Installs Temurin JDK 17 with Gradle caching
+- **Android SDK**: Installs Android SDK API 36 and Build Tools 36.0.0
+- **Gradle Cache**: Caches dependencies based on `*.gradle*`, `gradle-wrapper.properties`, and `libs.versions.toml`
+
+### How to Use
+
+#### Option 1: Automatic Build on Push
+
+Simply push your code to the `main` branch:
+
+```bash
+git add .
+git commit -m "Your changes"
+git push origin main
+```
+
+The workflow will build a debug APK and create a pre-release automatically.
+
+#### Option 2: Create a Release with a Tag
+
+Create and push a version tag to trigger a release build:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+This builds a release APK and creates a GitHub Release marked as "latest".
+
+#### Option 3: Manual Trigger
+
+1. Go to your repository on GitHub
+2. Click the **Actions** tab
+3. Select **"Build & Release APK"** from the left sidebar
+4. Click **"Run workflow"**
+5. Choose your options:
+   - **Build Type**: `debug` or `release`
+   - **Create GitHub Release**: `true` or `false`
+   - **Release tag name**: Leave empty for auto-generated, or enter custom tag (e.g., `v2.0-beta`)
+6. Click the green **"Run workflow"** button
+
+#### Downloading the APK
+
+After a successful build:
+
+1. **From Releases**: Go to the **Releases** section of the repository. The APK is attached to the release.
+2. **From Artifacts**: Go to **Actions** > click on the workflow run > scroll to **Artifacts** section > download the APK.
+
+### APK Naming Convention
+
+Built APKs follow this naming pattern:
+
+```
+wifi-wps-wpa-tester-v{VERSION}-{BUILD_TYPE}-{DATE}-{COMMIT}.apk
+```
+
+Example: `wifi-wps-wpa-tester-v1.0-debug-20260224-a3f5c2d.apk`
+
+### Release Notes
+
+Each release automatically includes:
+- Version and build type info
+- Commit hash and build date
+- Last 10 commits as changelog
+- Android requirements
+- Legal disclaimer
+
+---
 
 ## Project Structure
 
@@ -100,9 +258,29 @@ app/src/main/java/sangiorgi/wps/opensource/
 │   ├── viewmodels/     # ViewModels
 │   └── theme/          # Material theme
 └── utils/              # Utility classes
+
+.github/
+└── workflows/
+    ├── android.yml                 # CI: Build + Test + Release (tag-based)
+    └── build-and-release-apk.yml   # CI/CD: Full build pipeline with auto-release
 ```
 
 WPS connection logic (commands, handlers, services) is provided by the [WpsConnectionLibrary](https://github.com/fulvius31/WpsConnectionLibrary).
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Language | Kotlin |
+| UI Framework | Jetpack Compose |
+| Design System | Material Design 3 |
+| DI | Hilt (Dagger) |
+| Navigation | Compose Navigation |
+| Root Access | libsu |
+| WPS Logic | [WpsConnectionLibrary](https://github.com/fulvius31/WpsConnectionLibrary) |
+| Build System | Gradle 9.3.0 |
+| CI/CD | GitHub Actions |
+| Code Quality | Spotless, Detekt, Checkstyle |
 
 ## Contributing
 
