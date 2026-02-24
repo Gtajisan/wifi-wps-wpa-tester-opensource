@@ -1,0 +1,404 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+      - 'release-*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+      create_release:
+        description: 'Create GitHub Release after build'
+        required: true
+        default: true
+        type: boolean
+      release_tag:
+        description: 'Release tag name (leave empty for auto-generated)'
+        required: false
+        default: ''
+        type: string
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+  GRADLE_OPTS: '-Xmx2048m -Dorg.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m -XX:+UseG1GC'
+  ANDROID_COMPILE_SDK: '36'
+  ANDROID_BUILD_TOOLS: '36.0.0'
+  ANDROID_TARGET_SDK: '36'
+  APK_NAME_PREFIX: 'wifi-wps-wpa-tester'
+
+jobs:
+  # ============================================================
+  # JOB 1: Build the APK (debug or release)
+  # ============================================================
+  build:
+    name: "Build APK (${{ github.event.inputs.build_type || 'debug' }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    outputs:
+      apk_path: ${{ steps.find_apk.outputs.apk_path }}
+      apk_name: ${{ steps.find_apk.outputs.apk_name }}
+      version_name: ${{ steps.app_info.outputs.version_name }}
+      version_code: ${{ steps.app_info.outputs.version_code }}
+      build_type: ${{ steps.set_build_type.outputs.build_type }}
+      short_sha: ${{ steps.set_build_type.outputs.short_sha }}
+
+    steps:
+      # ----------------------------------------------------------
+      # Step 1: Checkout source code
+      # ----------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ----------------------------------------------------------
+      # Step 2: Maximize disk space (TWRP-style cleanup)
+      # ----------------------------------------------------------
+      - name: Free up disk space
+        run: |
+          echo "=== Before cleanup ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo apt-get clean
+          echo "=== After cleanup ==="
+          df -h /
+
+      # ----------------------------------------------------------
+      # Step 3: Set up swap space (TWRP-style, prevents OOM kills)
+      # ----------------------------------------------------------
+      - name: Set up swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 10
+
+      # ----------------------------------------------------------
+      # Step 4: Determine build type
+      # ----------------------------------------------------------
+      - name: Determine build type
+        id: set_build_type
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            BUILD_TYPE="${{ github.event.inputs.build_type }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]] || [[ "${{ github.ref }}" == refs/tags/release-* ]]; then
+            BUILD_TYPE="release"
+          else
+            BUILD_TYPE="debug"
+          fi
+          echo "build_type=${BUILD_TYPE}" >> $GITHUB_OUTPUT
+          echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "Build type: ${BUILD_TYPE}"
+
+      # ----------------------------------------------------------
+      # Step 5: Set up JDK 17
+      # ----------------------------------------------------------
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: gradle
+
+      # ----------------------------------------------------------
+      # Step 6: Set up Android SDK
+      # ----------------------------------------------------------
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platforms;android-${{ env.ANDROID_COMPILE_SDK }}" \
+                     "build-tools;${{ env.ANDROID_BUILD_TOOLS }}" \
+                     "platform-tools"
+          sdkmanager --list_installed
+
+      # ----------------------------------------------------------
+      # Step 7: Gradle wrapper validation and permissions
+      # ----------------------------------------------------------
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # ----------------------------------------------------------
+      # Step 8: Cache Gradle dependencies
+      # ----------------------------------------------------------
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ----------------------------------------------------------
+      # Step 9: Extract app version info
+      # ----------------------------------------------------------
+      - name: Extract app version info
+        id: app_info
+        run: |
+          VERSION_NAME=$(grep -oP 'versionName\s+"?\K[^"]+' app/build.gradle || echo "1.0.0")
+          VERSION_CODE=$(grep -oP 'versionCode\s+\K\d+' app/build.gradle || echo "1")
+          echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "App Version: ${VERSION_NAME} (${VERSION_CODE})"
+
+      # ----------------------------------------------------------
+      # Step 10: Run code quality checks
+      # ----------------------------------------------------------
+      - name: Run Spotless check
+        run: ./gradlew spotlessCheck
+        continue-on-error: true
+
+      - name: Run Detekt
+        run: ./gradlew detekt
+        continue-on-error: true
+
+      # ----------------------------------------------------------
+      # Step 11: Build the APK
+      # ----------------------------------------------------------
+      - name: Build Debug APK
+        if: steps.set_build_type.outputs.build_type == 'debug'
+        run: |
+          echo "Building debug APK..."
+          ./gradlew assembleOpenDebug --no-daemon --stacktrace
+          echo "Debug build complete!"
+
+      - name: Build Release APK
+        if: steps.set_build_type.outputs.build_type == 'release'
+        run: |
+          echo "Building release APK..."
+          ./gradlew assembleOpenRelease --no-daemon --stacktrace
+          echo "Release build complete!"
+
+      # ----------------------------------------------------------
+      # Step 12: Run unit tests
+      # ----------------------------------------------------------
+      - name: Run unit tests
+        run: ./gradlew testOpenDebugUnitTest --no-daemon
+        continue-on-error: true
+
+      # ----------------------------------------------------------
+      # Step 13: Find and rename the APK
+      # ----------------------------------------------------------
+      - name: Find built APK
+        id: find_apk
+        run: |
+          BUILD_TYPE="${{ steps.set_build_type.outputs.build_type }}"
+          SHORT_SHA="${{ steps.set_build_type.outputs.short_sha }}"
+          VERSION="${{ steps.app_info.outputs.version_name }}"
+          DATE=$(date +'%Y%m%d')
+
+          if [[ "${BUILD_TYPE}" == "release" ]]; then
+            APK_DIR="app/build/outputs/apk/open/release"
+          else
+            APK_DIR="app/build/outputs/apk/open/debug"
+          fi
+
+          APK_FILE=$(find ${APK_DIR} -name "*.apk" -type f | head -1)
+
+          if [[ -z "${APK_FILE}" ]]; then
+            echo "ERROR: No APK found!"
+            exit 1
+          fi
+
+          NEW_NAME="${{ env.APK_NAME_PREFIX }}-v${VERSION}-${BUILD_TYPE}-${DATE}-${SHORT_SHA}.apk"
+          cp "${APK_FILE}" "${APK_DIR}/${NEW_NAME}"
+
+          echo "apk_path=${APK_DIR}/${NEW_NAME}" >> $GITHUB_OUTPUT
+          echo "apk_name=${NEW_NAME}" >> $GITHUB_OUTPUT
+          echo "APK: ${NEW_NAME}"
+          ls -lh "${APK_DIR}/${NEW_NAME}"
+
+      # ----------------------------------------------------------
+      # Step 14: Upload APK as build artifact
+      # ----------------------------------------------------------
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.find_apk.outputs.apk_name }}
+          path: ${{ steps.find_apk.outputs.apk_path }}
+          retention-days: 30
+          if-no-files-found: error
+
+      # ----------------------------------------------------------
+      # Step 15: Upload test results on failure
+      # ----------------------------------------------------------
+      - name: Upload test results (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.sha }}
+          path: |
+            app/build/reports/tests/
+            app/build/reports/detekt/
+          retention-days: 14
+
+      # ----------------------------------------------------------
+      # Step 16: Stop Gradle daemon
+      # ----------------------------------------------------------
+      - name: Stop Gradle daemon
+        if: always()
+        run: ./gradlew --stop
+
+  # ============================================================
+  # JOB 2: Create GitHub Release & upload APK
+  # ============================================================
+  release:
+    name: Create Release & Upload APK
+    runs-on: ubuntu-latest
+    needs: build
+    if: |
+      (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/release-'))) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    permissions:
+      contents: write
+
+    steps:
+      # ----------------------------------------------------------
+      # Step 1: Checkout for release notes
+      # ----------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ----------------------------------------------------------
+      # Step 2: Download the built APK
+      # ----------------------------------------------------------
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.apk_name }}
+          path: ./release-apk/
+
+      - name: Verify APK
+        run: |
+          echo "Downloaded APK:"
+          ls -lh ./release-apk/
+          APK_SIZE=$(stat -c%s "./release-apk/${{ needs.build.outputs.apk_name }}" 2>/dev/null || echo "0")
+          echo "APK size: ${APK_SIZE} bytes"
+          if [[ "${APK_SIZE}" -lt 1000 ]]; then
+            echo "ERROR: APK file seems too small or missing!"
+            exit 1
+          fi
+
+      # ----------------------------------------------------------
+      # Step 3: Generate release tag
+      # ----------------------------------------------------------
+      - name: Generate release tag
+        id: release_tag
+        run: |
+          VERSION="${{ needs.build.outputs.version_name }}"
+          SHORT_SHA="${{ needs.build.outputs.short_sha }}"
+          BUILD_TYPE="${{ needs.build.outputs.build_type }}"
+          DATE=$(date +'%Y%m%d-%H%M')
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.release_tag }}" ]]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="v${VERSION}-${BUILD_TYPE}-${DATE}"
+          fi
+
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Release tag: ${TAG}"
+
+      # ----------------------------------------------------------
+      # Step 4: Generate release notes
+      # ----------------------------------------------------------
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          BUILD_TYPE="${{ needs.build.outputs.build_type }}"
+          VERSION="${{ needs.build.outputs.version_name }}"
+          VERSION_CODE="${{ needs.build.outputs.version_code }}"
+          SHORT_SHA="${{ needs.build.outputs.short_sha }}"
+          APK_NAME="${{ needs.build.outputs.apk_name }}"
+          DATE=$(date +'%Y-%m-%d %H:%M UTC')
+
+          LAST_COMMITS=$(git log --oneline -10 --no-merges 2>/dev/null || echo "No commit history available")
+
+          cat > release_notes.md << 'NOTES_EOF'
+          ## WiFi WPS WPA Tester - Build Info
+
+          | Detail | Value |
+          |--------|-------|
+          NOTES_EOF
+
+          echo "| **Version** | ${VERSION} (code: ${VERSION_CODE}) |" >> release_notes.md
+          echo "| **Build Type** | ${BUILD_TYPE} |" >> release_notes.md
+          echo "| **Commit** | ${SHORT_SHA} |" >> release_notes.md
+          echo "| **Build Date** | ${DATE} |" >> release_notes.md
+          echo "| **APK** | ${APK_NAME} |" >> release_notes.md
+          echo "| **Min Android** | 7.0 (API 24) |" >> release_notes.md
+          echo "| **Target SDK** | 36 |" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Requirements" >> release_notes.md
+          echo "- Android 7.0 (API 24) or higher" >> release_notes.md
+          echo "- Root access required for WPS testing" >> release_notes.md
+          echo "- Location permission required for WiFi scanning" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Recent Changes" >> release_notes.md
+          echo '```' >> release_notes.md
+          echo "${LAST_COMMITS}" >> release_notes.md
+          echo '```' >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Disclaimer" >> release_notes.md
+          echo "This application is intended for **educational and authorized security testing purposes only**." >> release_notes.md
+          echo "Testing wireless networks without authorization is illegal." >> release_notes.md
+
+          cat release_notes.md
+
+      # ----------------------------------------------------------
+      # Step 5: Create GitHub Release and upload APK
+      # ----------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: "WiFi WPS WPA Tester ${{ steps.release_tag.outputs.tag }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ needs.build.outputs.build_type == 'debug' }}
+          files: ./release-apk/${{ needs.build.outputs.apk_name }}
+          fail_on_unmatched_files: true
+          make_latest: ${{ needs.build.outputs.build_type == 'release' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ----------------------------------------------------------
+      # Step 6: Print release URL
+      # ----------------------------------------------------------
+      - name: Print release info
+        run: |
+          echo "============================================="
+          echo " Release created successfully!"
+          echo " Tag: ${{ steps.release_tag.outputs.tag }}"
+          echo " APK: ${{ needs.build.outputs.apk_name }}"
+          echo " URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.release_tag.outputs.tag }}"
+          echo "============================================="
