@@ -30,6 +30,7 @@ on:
         type: string
 
 env:
+  APP_DIR: 'wifi-wps-repo'
   JAVA_VERSION: '17'
   JAVA_DISTRIBUTION: 'temurin'
   GRADLE_OPTS: '-Xmx2048m -Dorg.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m -XX:+UseG1GC'
@@ -55,6 +56,10 @@ jobs:
       build_type: ${{ steps.set_build_type.outputs.build_type }}
       short_sha: ${{ steps.set_build_type.outputs.short_sha }}
 
+    defaults:
+      run:
+        working-directory: ${{ env.APP_DIR }}
+
     steps:
       # ----------------------------------------------------------
       # Step 1: Checkout source code
@@ -63,6 +68,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          sparse-checkout: |
+            ${{ env.APP_DIR }}
+            .github
 
       # ----------------------------------------------------------
       # Step 2: Maximize disk space (TWRP-style cleanup)
@@ -227,7 +235,7 @@ jobs:
           NEW_NAME="${{ env.APK_NAME_PREFIX }}-v${VERSION}-${BUILD_TYPE}-${DATE}-${SHORT_SHA}.apk"
           cp "${APK_FILE}" "${APK_DIR}/${NEW_NAME}"
 
-          echo "apk_path=${APK_DIR}/${NEW_NAME}" >> $GITHUB_OUTPUT
+          echo "apk_path=${{ env.APP_DIR }}/${APK_DIR}/${NEW_NAME}" >> $GITHUB_OUTPUT
           echo "apk_name=${NEW_NAME}" >> $GITHUB_OUTPUT
           echo "APK: ${NEW_NAME}"
           ls -lh "${APK_DIR}/${NEW_NAME}"
@@ -252,8 +260,8 @@ jobs:
         with:
           name: test-reports-${{ github.sha }}
           path: |
-            app/build/reports/tests/
-            app/build/reports/detekt/
+            ${{ env.APP_DIR }}/app/build/reports/tests/
+            ${{ env.APP_DIR }}/app/build/reports/detekt/
           retention-days: 14
 
       # ----------------------------------------------------------
