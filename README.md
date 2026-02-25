@@ -81,7 +81,7 @@ The core WPS connection logic (PIN testing, brute force, Pixie Dust, wpa_supplic
 
 ```bash
 # Clone the repository
-git clone https://github.com/fulvius31/wifi-wps-wpa-tester-opensource.git
+git clone https://github.com/Gtajisan/wifi-wps-wpa-tester-opensource.git
 
 # Navigate to project directory
 cd wifi-wps-wpa-tester-opensource/wifi-wps-repo
